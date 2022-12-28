@@ -377,6 +377,48 @@ def test_app_async_cm_lifespan(test_client_factory):
     assert startup_complete
     assert cleanup_complete
 
+def test_app_cm_and_event_handler(test_client_factory):
+    startup_complete = False
+    cleanup_complete = False
+
+    def run_startup():
+        nonlocal startup_complete
+        startup_complete = True
+
+    def run_cleanup():
+        nonlocal cleanup_complete
+        cleanup_complete = True
+
+    startup_complete_cm = False
+    cleanup_complete_cm = False
+
+    @asynccontextmanager
+    async def lifespan(app):
+        nonlocal startup_complete_cm, cleanup_complete_cm
+        startup_complete_cm = True
+        yield
+        cleanup_complete_cm = True
+
+    app = Starlette(
+        on_startup=[run_startup],
+        on_shutdown=[run_cleanup],
+        lifespan=lifespan,
+    )
+
+    assert not startup_complete
+    assert not cleanup_complete
+    assert not startup_complete_cm
+    assert not cleanup_complete_cm
+    with test_client_factory(app):
+        assert startup_complete
+        assert not cleanup_complete
+        assert startup_complete_cm
+        assert not cleanup_complete_cm
+    assert startup_complete
+    assert cleanup_complete
+    assert startup_complete_cm
+    assert cleanup_complete_cm
+
 
 deprecated_lifespan = pytest.mark.filterwarnings(
     r"ignore"
