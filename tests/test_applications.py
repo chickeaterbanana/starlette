@@ -356,6 +356,80 @@ def test_app_add_event_handler(test_client_factory):
     assert cleanup_complete
 
 
+def test_app_async_mutliple_cm_lifespan_backwardcomp(test_client_factory):
+    startup_complete_ls1 = False
+    cleanup_complete_ls1 = False
+    startup_complete_ls2 = False
+    cleanup_complete_ls2 = False
+
+    @asynccontextmanager
+    async def lifespan1(app):
+        nonlocal startup_complete_ls1, cleanup_complete_ls1
+        startup_complete_ls1 = True
+        yield
+        cleanup_complete_ls1 = True
+
+    @asynccontextmanager
+    async def lifespan2(app):
+        nonlocal startup_complete_ls2, cleanup_complete_ls2
+        startup_complete_ls2 = True
+        yield
+        cleanup_complete_ls2 = True
+
+    app = Starlette(lifespan=lifespan1, lifespans=[lifespan2])
+
+    assert not startup_complete_ls1
+    assert not cleanup_complete_ls1
+    assert not startup_complete_ls2
+    assert not cleanup_complete_ls2
+    with test_client_factory(app):
+        assert startup_complete_ls1
+        assert not cleanup_complete_ls1
+        assert startup_complete_ls2
+        assert not cleanup_complete_ls2
+    assert startup_complete_ls1
+    assert cleanup_complete_ls1
+    assert startup_complete_ls2
+    assert cleanup_complete_ls2
+
+
+def test_app_async_mutliple_cm_lifespan(test_client_factory):
+    startup_complete_ls1 = False
+    cleanup_complete_ls1 = False
+    startup_complete_ls2 = False
+    cleanup_complete_ls2 = False
+
+    @asynccontextmanager
+    async def lifespan1(app):
+        nonlocal startup_complete_ls1, cleanup_complete_ls1
+        startup_complete_ls1 = True
+        yield
+        cleanup_complete_ls1 = True
+
+    @asynccontextmanager
+    async def lifespan2(app):
+        nonlocal startup_complete_ls2, cleanup_complete_ls2
+        startup_complete_ls2 = True
+        yield
+        cleanup_complete_ls2 = True
+
+    app = Starlette(lifespans=[lifespan1, lifespan2])
+
+    assert not startup_complete_ls1
+    assert not cleanup_complete_ls1
+    assert not startup_complete_ls2
+    assert not cleanup_complete_ls2
+    with test_client_factory(app):
+        assert startup_complete_ls1
+        assert not cleanup_complete_ls1
+        assert startup_complete_ls2
+        assert not cleanup_complete_ls2
+    assert startup_complete_ls1
+    assert cleanup_complete_ls1
+    assert startup_complete_ls2
+    assert cleanup_complete_ls2
+
+
 def test_app_async_cm_lifespan(test_client_factory):
     startup_complete = False
     cleanup_complete = False
