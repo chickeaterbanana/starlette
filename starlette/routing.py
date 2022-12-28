@@ -1,4 +1,3 @@
-import contextlib
 import functools
 import inspect
 import re
@@ -6,7 +5,7 @@ import traceback
 import types
 import typing
 import warnings
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, AsyncExitStack, contextmanager
 from enum import Enum
 
 from starlette._utils import is_async_callable
@@ -549,7 +548,7 @@ class _AsyncLiftContextManager(typing.AsyncContextManager[_T]):
 def _wrap_gen_lifespan_context(
     lifespan_context: typing.Callable[[typing.Any], typing.Generator]
 ) -> typing.Callable[[typing.Any], typing.AsyncContextManager]:
-    cmgr = contextlib.contextmanager(lifespan_context)
+    cmgr = contextmanager(lifespan_context)
 
     @functools.wraps(cmgr)
     def wrapper(app: typing.Any) -> _AsyncLiftContextManager:
@@ -571,6 +570,27 @@ class _DefaultLifespan:
     def __call__(self: _T, app: object) -> _T:
         return self
 
+def lifespan_context_convert(lifespan):
+    if inspect.isasyncgenfunction(lifespan):
+        warnings.warn(
+            "async generator function lifespans are deprecated, "
+            "use an @contextlib.asynccontextmanager function instead",
+            DeprecationWarning,
+        )
+        return asynccontextmanager(
+            lifespan,  # type: ignore[arg-type]
+        )
+    if inspect.isgeneratorfunction(lifespan):
+        warnings.warn(
+            "generator function lifespans are deprecated, "
+            "use an @contextlib.asynccontextmanager function instead",
+            DeprecationWarning,
+        )
+        return _wrap_gen_lifespan_context(
+            lifespan,  # type: ignore[arg-type]
+        )
+    return lifespan
+
 
 class Router:
     def __init__(
@@ -583,38 +603,23 @@ class Router:
         lifespan: typing.Optional[
             typing.Callable[[typing.Any], typing.AsyncContextManager]
         ] = None,
+        lifespans: typing.Optional[
+            typing.Sequence[
+                typing.Callable[["Starlette"], typing.AsyncContextManager]
+            ]
+        ] = None,
     ) -> None:
         self.routes = [] if routes is None else list(routes)
         self.redirect_slashes = redirect_slashes
         self.default = self.not_found if default is None else default
         self.on_startup = [] if on_startup is None else list(on_startup)
         self.on_shutdown = [] if on_shutdown is None else list(on_shutdown)
+        self.lifespans = [_DefaultLifespan(self)]
+        if lifespans:
+            self.lifespans.extend(lifespan_context_convert(l) for l in lifespans)
 
-        if lifespan is None:
-            self.lifespan_context: typing.Callable[
-                [typing.Any], typing.AsyncContextManager
-            ] = _DefaultLifespan(self)
-
-        elif inspect.isasyncgenfunction(lifespan):
-            warnings.warn(
-                "async generator function lifespans are deprecated, "
-                "use an @contextlib.asynccontextmanager function instead",
-                DeprecationWarning,
-            )
-            self.lifespan_context = asynccontextmanager(
-                lifespan,  # type: ignore[arg-type]
-            )
-        elif inspect.isgeneratorfunction(lifespan):
-            warnings.warn(
-                "generator function lifespans are deprecated, "
-                "use an @contextlib.asynccontextmanager function instead",
-                DeprecationWarning,
-            )
-            self.lifespan_context = _wrap_gen_lifespan_context(
-                lifespan,  # type: ignore[arg-type]
-            )
-        else:
-            self.lifespan_context = lifespan
+        if lifespan:
+            self.lifespans.append(lifespan_context_convert(lifespan))
 
     async def not_found(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] == "websocket":
@@ -658,6 +663,20 @@ class Router:
                 await handler()
             else:
                 handler()
+
+    @asynccontextmanager
+    async def lifespan_context(self, app):
+        async with AsyncExitStack() as stack:
+            for lifespan in self.lifespans:
+                await stack.enter_async_context(lifespan(app))
+
+            for route in self.routes:
+                if hasattr(route, "app"):
+                    if hasattr(route.app, "lifespan_context"):
+                        await stack.enter_async_context(route.app.lifespan_context(app))
+                    elif hasattr(route.app, "router") and hasattr(route.app.router, "lifespan_context"):
+                        await stack.enter_async_context(route.app.router.lifespan_context(app))
+            yield
 
     async def lifespan(self, scope: Scope, receive: Receive, send: Send) -> None:
         """
